@@ -28,6 +28,7 @@ type proxy struct {
 	Verbose  bool
 	Prettify bool
 	Signer   *v4.Signer
+	Timeout  int
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -115,7 +116,10 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	payload := bytes.NewReader(replaceBody(req))
 	p.Signer.Sign(req, payload, p.Service, p.Region, time.Now())
 
-	resp, err := http.DefaultClient.Do(req)
+	c := &http.Client{}
+	c.Timeout = time.Duration(p.Timeout) * time.Second
+
+	resp, err := c.Do(req)
 	if err != nil {
 		log.Println(err)
 		respondError(err)
@@ -183,10 +187,13 @@ func main() {
 	var endpoint, listenAddress string
 	var verbose bool
 	var prettify bool
+	var timeout int
+	fmt.Println(len(os.Args), os.Args)
 
 	// TODO: Use a more sophisticated args parser that can enforce arguments
 	flag.StringVar(&endpoint, "endpoint", "", "Amazon ElasticSearch Endpoint (e.g: https://dummy-host.eu-west-1.es.amazonaws.com)")
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:9200", "Local TCP port to listen on")
+	flag.IntVar(&timeout, "timeout", 30, "Timeout")
 	flag.BoolVar(&verbose, "verbose", false, "Print user requests")
 	flag.BoolVar(&prettify, "pretty", false, "Prettify verbose output")
 
@@ -205,9 +212,17 @@ func main() {
 	}
 	signer := v4.NewSigner(sess.Config.Credentials)
 
-	mux := &proxy{Verbose: verbose, Prettify: prettify, Signer: signer}
+	mux := &proxy{Verbose: verbose, Prettify: prettify, Signer: signer, Timeout: timeout}
 	parseEndpoint(endpoint, mux)
 
 	fmt.Printf("Listening on %s\n", listenAddress)
-	log.Fatal(http.ListenAndServe(listenAddress, mux))
+	srv := &http.Server{
+		Addr:         listenAddress,
+		ReadTimeout:  time.Duration(timeout) * time.Second,
+		WriteTimeout: time.Duration(timeout) * time.Second,
+		IdleTimeout:  time.Duration(timeout) * time.Second,
+		Handler:      mux,
+	}
+
+	srv.ListenAndServe()
 }
